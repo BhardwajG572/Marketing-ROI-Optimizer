@@ -1,0 +1,185 @@
+/*
+===============================================================================
+DDL Script: Create Gold Views
+===============================================================================
+Script Purpose:
+    This script creates views for the Gold layer in the maven_db. 
+
+    Each view performs transformations and combines data from the Silver layer 
+    to produce a clean, enriched, and business-ready dataset.
+
+Usage:
+    - These views can be queried directly for analytics and reporting.
+===============================================================================
+*/
+
+-- Drop the old generic view if it exists
+IF OBJECT_ID('gold.marketing_data' , 'V') IS NOT NULL 
+    DROP VIEW gold.marketing_data;
+GO
+
+-- ====================================================================
+-- VIEW 1: Customer Demographic Value
+-- ====================================================================
+CREATE VIEW gold.vw_customer_demographic_value AS 
+SELECT 
+    Customer_Generation,
+    Education,
+    Marital_Status,
+    country,
+    Total_Dependents,
+    COUNT(ID) AS Total_Customers,
+    ROUND(AVG(CAST(Income AS FLOAT)), 2) AS Average_Income,
+    ROUND(AVG(CAST(total_spend AS FLOAT)), 2) AS Average_Revenue_Per_User
+FROM silver.marketing_data
+GROUP BY Customer_Generation, Education, Marital_Status, country, Total_Dependents
+HAVING COUNT(ID) > 0;
+GO
+
+
+
+-- ====================================================================
+-- VIEW 2: Product Affinity Trends
+-- ====================================================================
+IF OBJECT_ID('gold.vw_product_affinity_trends' , 'V') IS NOT NULL 
+    DROP VIEW gold.vw_product_affinity_trends;
+GO
+
+CREATE VIEW gold.vw_product_affinity_trends AS 
+SELECT 
+    Customer_Generation, 
+    COUNT(ID) AS Total_Customers,          
+    ROUND(AVG(CAST(total_spend AS FLOAT)), 2) AS Average_Spend,     
+    
+    -- Macro Groupings
+    ROUND(AVG(CAST(Total_Essential_spend AS FLOAT)), 2) AS Avg_Essential_Spend,
+    ROUND(AVG(CAST(total_luxury_spend AS FLOAT)), 2) AS Avg_Luxury_Spend,
+    
+    -- Micro Groupings
+    ROUND(AVG(CAST(MntWines AS FLOAT)), 2) AS Avg_Wine_Spend,       
+    ROUND(AVG(CAST(MntMeatProducts AS FLOAT)), 2) AS Avg_Meat_Spend,
+    ROUND(AVG(CAST(MNtFishProducts AS FLOAT)), 2) AS Avg_Fish_Spend, 
+    ROUND(AVG(CAST(MntGoldProds AS FLOAT)), 2) AS Avg_Gold_Spend,
+    ROUND(AVG(CAST(MntSweetProducts AS FLOAT)), 2) AS Avg_Sweet_Spend,
+    ROUND(AVG(CAST(MntFruits AS FLOAT)), 2) AS Avg_Fruit_Spend
+FROM silver.marketing_data
+GROUP BY Customer_Generation;
+GO
+
+
+
+
+-- ====================================================================
+-- VIEW 3: Omnichannel Behavior
+-- ====================================================================
+IF OBJECT_ID('gold.vw_omnichannel_behavior' , 'V') IS NOT NULL 
+    DROP VIEW gold.vw_omnichannel_behavior;
+GO
+
+CREATE VIEW gold.vw_omnichannel_behavior AS 
+SELECT 
+    Customer_Generation,
+    COUNT(ID) AS Total_Customers,
+    
+    -- Customer Friction / Dissatisfaction 
+    ROUND(AVG(CAST(Complain AS FLOAT)) * 100, 2) AS Complaint_Rate_Pct,
+    
+    -- Deal Sensitivity
+    ROUND(AVG(CAST(NumDealsPurchases AS FLOAT)), 2) AS Avg_Deals_Purchases,
+    
+    -- Channel Preferences
+    ROUND(AVG(CAST(NumWebPurchases AS FLOAT)), 2) AS Avg_Web_Purchases,
+    ROUND(AVG(CAST(NumCatalogPurchases AS FLOAT)), 2) AS Avg_Catalog_Purchases,
+    ROUND(AVG(CAST(NumStorePurchases AS FLOAT)), 2) AS Avg_Store_Purchases,
+    
+    -- Digital Engagement
+    ROUND(AVG(CAST(NumWebVisitsMonth AS FLOAT)), 2) AS Avg_Web_Visits_Per_Month
+FROM silver.marketing_data
+GROUP BY Customer_Generation;
+GO
+
+
+-- ====================================================================
+-- VIEW 4: Campaign ROI Analysis
+-- ====================================================================
+IF OBJECT_ID('gold.vw_campaign_roi_analysis' , 'V') IS NOT NULL 
+    DROP VIEW gold.vw_campaign_roi_analysis;
+GO
+
+CREATE VIEW gold.vw_campaign_roi_analysis AS 
+SELECT 
+    Customer_Generation,
+    COUNT(ID) AS Total_Customers,
+    
+    -- Individual Campaign Conversion Rates (%)
+    ROUND(AVG(CAST(AcceptedCmp1 AS FLOAT)) * 100, 2) AS Cmp1_Conversion_Pct,
+    ROUND(AVG(CAST(AcceptedCmp2 AS FLOAT)) * 100, 2) AS Cmp2_Conversion_Pct,
+    ROUND(AVG(CAST(AcceptedCmp3 AS FLOAT)) * 100, 2) AS Cmp3_Conversion_Pct,
+    ROUND(AVG(CAST(AcceptedCmp4 AS FLOAT)) * 100, 2) AS Cmp4_Conversion_Pct,
+    ROUND(AVG(CAST(AcceptedCmp5 AS FLOAT)) * 100, 2) AS Cmp5_Conversion_Pct,
+    
+    -- The most recent campaign
+    ROUND(AVG(CAST(Response AS FLOAT)) * 100, 2) AS Recent_Response_Pct,
+    
+    -- Overall Engagement Score
+    ROUND(AVG(CAST(Total_Campaigns_Accepted AS FLOAT)), 2) AS Avg_Campaigns_Accepted_Per_User
+FROM silver.marketing_data
+GROUP BY Customer_Generation;
+GO
+
+
+-- ====================================================================
+-- VIEW 5: RFM Predictive Segmentation
+-- ====================================================================
+IF OBJECT_ID('gold.vw_rfm_segmentation' , 'V') IS NOT NULL 
+    DROP VIEW gold.vw_rfm_segmentation;
+GO
+
+CREATE VIEW gold.vw_rfm_segmentation AS 
+WITH cte AS (
+    SELECT 
+        ID, 
+        customer_generation, 
+        Recency, 
+        (NumWebPurchases + NumCatalogPurchases + NumStorePurchases) AS Frequency, 
+        Total_Spend
+    FROM silver.marketing_data 
+),
+scoring_engine AS (
+    SELECT 
+        ID, 
+        customer_generation, 
+        NTILE(5) OVER (ORDER BY recency ASC) AS recency_tile,
+        NTILE(5) OVER (ORDER BY frequency DESC) AS frequency_tile, 
+        NTILE(5) OVER (ORDER BY Total_Spend DESC) AS monetary_tile
+    FROM cte
+),
+segmented_customers AS (
+    SELECT 
+        ID,
+        Customer_Generation,
+        CONCAT(recency_tile, frequency_tile, monetary_tile) AS RFM_Score,
+        CASE 
+            WHEN CONCAT(recency_tile, frequency_tile, monetary_tile) = '555' THEN 'Champions'
+            WHEN recency_tile >= 4 AND frequency_tile = 1 THEN 'New Customers'
+            WHEN recency_tile <= 2 AND monetary_tile >= 4 THEN 'At Risk VIPs'
+            WHEN recency_tile <= 2 AND frequency_tile <= 2 THEN 'Lost Customers'
+            ELSE 'Standard Engaged' 
+        END AS RFM_Segment
+    FROM scoring_engine
+)
+SELECT 
+    Customer_Generation,
+    RFM_Segment,
+    COUNT(ID) AS Total_Customers
+FROM segmented_customers
+GROUP BY Customer_Generation, RFM_Segment;
+GO
+
+
+use maven_DB;
+SELECT * from silver.marketing_data;
+
+SELECT AVG(income),count(*) from silver.marketing_data
+where income is null;
+
