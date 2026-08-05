@@ -1,0 +1,174 @@
+/*
+===============================================================================
+Stored Procedure: Load Silver Layer (Bronze -> Silver)
+===============================================================================
+Script Purpose:
+    Performs the ETL process to populate 'silver' schema tables from 'bronze'.
+    - Truncates Silver tables.
+    - Cleanses, transforms, and inserts data from Bronze.
+    - Handles null values and deduplicates based on primary key.
+
+Usage Example:
+    EXEC silver.load_silver;
+===============================================================================
+*/
+
+CREATE OR ALTER PROCEDURE silver.load_silver AS 
+BEGIN 
+    DECLARE @start_time DATETIME, @end_time DATETIME;
+
+    BEGIN TRY
+        PRINT '================================================';
+        PRINT 'Loading Silver Layer';
+        PRINT '================================================';
+        
+        SET @start_time = GETDATE(); 
+        
+        PRINT ' >> Truncating Table: silver.marketing_data'; 
+        TRUNCATE TABLE silver.marketing_data;
+        
+        PRINT ' >> Inserting Data Into: silver.marketing_data';
+
+        -- CTE for Transformation and Deduplication
+        WITH Deduplicated_Bronze AS (
+            SELECT 
+                ID,
+                CAST(Year_Birth AS INT) AS Year_Birth,
+                
+                -- Demographic Engineering
+                CASE 
+                    WHEN Year_Birth < 1946 THEN 'Silent Generation (Born Before 1946)'
+                    WHEN Year_Birth BETWEEN 1946 AND 1964 THEN 'Baby Boomer (Born Between 1946 and 1964)'
+                    WHEN Year_Birth BETWEEN 1965 AND 1980 THEN 'Gen X (Born Between 1965 and 1980)'
+                    WHEN Year_Birth BETWEEN 1981 AND 1996 THEN 'Millennial (Born Between 1981 and 1996)'
+                    WHEN Year_Birth >= 1997 THEN 'Gen Z (Born After 1997)'
+                    ELSE 'Unknown' 
+                END AS Customer_Generation,
+                Education,
+                
+                CASE 
+                    WHEN Marital_Status IN ('Married', 'Together') THEN 'Together'
+                    WHEN Marital_Status IN ('Single', 'Divorced', 'Widow', 'Alone', 'Absurd', 'YOLO') THEN 'Alone'
+                    ELSE 'Alone'
+                END AS Marital_Status, 
+                
+                Income, 
+                (COALESCE(Kidhome, 0) + COALESCE(TeenHome, 0)) AS Total_Dependents, 
+                CONVERT(DATE, Dt_Customer, 105) AS Dt_Customer,
+                Recency,
+                
+                -- Standard Metrics
+                MntWines, MntFruits, MntMeatProducts, MntFishProducts, MntSweetProducts, MntGoldProds,
+                
+                -- Engineered Financial Features
+                (COALESCE(MntWines, 0) + COALESCE(MntFruits, 0) + COALESCE(MntMeatProducts, 0) + 
+                 COALESCE(MntFishProducts, 0) + COALESCE(MntSweetProducts, 0) + COALESCE(MntGoldProds, 0)) AS Total_Spend,
+                (COALESCE(MntFruits, 0) + COALESCE(MntMeatProducts, 0) + 
+                 COALESCE(MntFishProducts, 0) + COALESCE(MntSweetProducts, 0)) AS Total_Essential_Spend,
+                (COALESCE(MntWines, 0) + COALESCE(MntGoldProds, 0)) AS Total_Luxury_Spend,
+
+                -- Transaction Metrics
+                NumDealsPurchases, NumWebPurchases, NumCatalogPurchases, NumStorePurchases, NumWebVisitsMonth,
+                
+                (COALESCE(NumWebPurchases, 0) + COALESCE(NumCatalogPurchases, 0) + 
+                 COALESCE(NumStorePurchases, 0)) AS Total_Purchases,
+
+                -- Campaign Metrics
+                AcceptedCmp1, AcceptedCmp2, AcceptedCmp3, AcceptedCmp4, AcceptedCmp5, Response, Complain, Country,
+
+                (COALESCE(AcceptedCmp1, 0) + COALESCE(AcceptedCmp2, 0) + COALESCE(AcceptedCmp3, 0) + 
+                 COALESCE(AcceptedCmp4, 0) + COALESCE(AcceptedCmp5, 0) + COALESCE(Response, 0)) AS Total_Campaigns_Accepted,
+
+                -- Window Function for Strict Deduplication
+                ROW_NUMBER() OVER (PARTITION BY ID ORDER BY Dt_Customer DESC) AS row_num
+
+            FROM bronze.marketing_data
+            WHERE CAST(Year_Birth AS INT) >= 1920 
+              AND Income IS NOT NULL
+        )
+        
+        -- DML Execution block mapped to CTE output
+        INSERT INTO silver.marketing_data (
+            ID,
+            Year_Birth, 
+            Customer_Generation, 
+            Education, 
+            Marital_Status, 
+            Income, 
+            Total_Dependents, 
+            Dt_Customer,
+            Recency, MntWines,
+            MntFruits,
+            MntMeatProducts,
+            MntFishProducts, 
+            MntSweetProducts, 
+            MntGoldProds, 
+            Total_Spend, 
+            Total_Essential_Spend, 
+            Total_Luxury_Spend, 
+            NumDealsPurchases, 
+            NumWebPurchases, 
+            NumCatalogPurchases,
+            NumStorePurchases, 
+            NumWebVisitsMonth,
+            Total_Purchases,
+            AcceptedCmp1, 
+            AcceptedCmp2,
+            AcceptedCmp3, 
+            AcceptedCmp4,
+            AcceptedCmp5,
+            Response, 
+            Complain, 
+            Country,
+            Total_Campaigns_Accepted
+        )
+        SELECT 
+            ID, 
+            Year_Birth,
+            Customer_Generation, 
+            Education, 
+            Marital_Status, 
+            Income, 
+            Total_Dependents, 
+            Dt_Customer,
+            Recency,
+            MntWines,
+            MntFruits,
+            MntMeatProducts, 
+            MntFishProducts, 
+            MntSweetProducts, 
+            MntGoldProds, 
+            Total_Spend,
+            Total_Essential_Spend,
+            Total_Luxury_Spend, 
+            NumDealsPurchases, 
+            NumWebPurchases,
+            NumCatalogPurchases,
+            NumStorePurchases, 
+            NumWebVisitsMonth, 
+            Total_Purchases,
+            AcceptedCmp1,
+            AcceptedCmp2, 
+            AcceptedCmp3, 
+            AcceptedCmp4, 
+            AcceptedCmp5,
+            Response,
+            Complain,
+            Country,
+            Total_Campaigns_Accepted
+        FROM Deduplicated_Bronze
+        WHERE row_num = 1;
+
+        SET @end_time = GETDATE(); 
+        PRINT '>> Load Duration: ' + CAST(DATEDIFF(second, @start_time, @end_time) AS NVARCHAR) + ' seconds';
+        PRINT '>> ------------------------------------------------------------';
+
+    END TRY
+    BEGIN CATCH
+        PRINT '================================================';
+        PRINT 'ERROR OCCURRED DURING LOAD';
+        PRINT 'Error Message: ' + ERROR_MESSAGE();
+        PRINT '================================================';
+    END CATCH
+END;
+GO
